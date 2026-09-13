@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="3.1"><display-name>부조뱅크 SCM</display-name><welcome-file-list><welcome-file>app/login</welcome-file></welcome-file-list><session-config><session-timeout>30</session-timeout><cookie-config><http-only>true</http-only></cookie-config></session-config><error-page><error-code>404</error-code><location>/WEB-INF/views/404.jsp</location></error-page></web-app>

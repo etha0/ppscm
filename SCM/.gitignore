@@ -1,0 +1,10 @@
+target/
+.preview/
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+.local/
+.preview-test/

@@ -1,0 +1,17 @@
+
+# war 빌드방법 
+
+cd D:\_Source_\WorkSpace_Bubang\MRO\SCM
+
+$env:JAVA_HOME = 'C:\DevTools\java\openlogic-openjdk-17.0.14+7-windows-x64'
+
+& 'C:\DevTools\apache-maven-3.9.16\bin\mvn.cmd' -B package
+
+if ($LASTEXITCODE -ne 0) {
+    throw 'WAR 빌드에 실패했습니다.'
+}
+
+Write-Host "WAR 생성 완료: $PWD\target\scm.war"
+
+계정 정보
+admin / admin1234!@#$

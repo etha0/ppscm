@@ -1,0 +1,5 @@
+<%@ page pageEncoding="UTF-8" %>
+<dialog id="inventory-history-dialog" aria-labelledby="inventory-history-title">
+<div class="panel-heading"><div><h2 id="inventory-history-title">상품별 재고 이력</h2><p>선택한 상품의 입고·출고·재고 조정 내역입니다.</p></div><button type="button" class="button" data-history-close aria-label="재고 이력 닫기" autofocus>닫기 ×</button></div>
+<div id="inventory-history-content" aria-live="polite"></div>
+</dialog>

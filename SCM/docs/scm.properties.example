@@ -1,0 +1,8 @@
+# Copy to .local/scm.properties and enter credentials locally.
+SCM_DB_URL=jdbc:mariadb://localhost:3306/buzobank?connectTimeout=5000&socketTimeout=15000
+SCM_DB_USER=
+SCM_DB_PASSWORD=
+# Explicit first initialization only. Disable after successful initialization.
+SCM_DB_INIT=false
+SCM_BOOTSTRAP_USERNAME=admin
+SCM_BOOTSTRAP_PASSWORD=
