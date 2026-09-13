@@ -7,8 +7,11 @@ import java.sql.*;
 import java.util.*;
 
 public final class Database {
+    private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(Database.class.getName());
+    private final java.util.concurrent.atomic.AtomicBoolean credentialsLogged = new java.util.concurrent.atomic.AtomicBoolean();
     private final Properties config = new Properties();
     public Database() {
+        config.putAll(loadProfile());
         String path = System.getenv("SCM_CONFIG");
         if (path != null && !path.trim().isEmpty()) {
             try (Reader in = Files.newBufferedReader(Paths.get(path), StandardCharsets.UTF_8)) { config.load(in); }
@@ -16,14 +19,42 @@ public final class Database {
         }
         try { Class.forName("org.mariadb.jdbc.Driver"); } catch (ClassNotFoundException e) { throw new IllegalStateException(e); }
     }
+    static Properties loadProfile() {
+        Properties build = new Properties();
+        loadResource(build, "/scm-build.properties");
+        String profile = build.getProperty("scm.profile", "").trim();
+        if (!"dev".equals(profile) && !"prod".equals(profile)) {
+            throw new IllegalStateException("Maven 프로필 -Pdev 또는 -Pprod로 빌드해야 합니다.");
+        }
+        Properties properties = new Properties();
+        loadResource(properties, "/application.properties");
+        loadResource(properties, "/application-" + profile + ".properties");
+        return properties;
+    }
+    private static void loadResource(Properties properties, String path) {
+        try (InputStream stream = Database.class.getResourceAsStream(path)) {
+            if (stream == null) throw new IllegalStateException(path + " 파일이 없습니다.");
+            try (Reader in = new InputStreamReader(stream, StandardCharsets.UTF_8)) { properties.load(in); }
+        } catch (IOException e) { throw new IllegalStateException(path + " 파일을 읽을 수 없습니다.", e); }
+    }
     public String setting(String key, String fallback) { String env = System.getenv(key); return env == null ? config.getProperty(key, fallback) : env; }
     public Connection open() throws SQLException {
         String url = setting("SCM_DB_URL", "");
+        String user = setting("SCM_DB_USER", "");
+        String password = setting("SCM_DB_PASSWORD", "");
+        if (Boolean.parseBoolean(setting("SCM_DB_LOG_CREDENTIALS", "false")) && credentialsLogged.compareAndSet(false, true)) {
+            LOG.warning("SCM DB temporary diagnostic: url=[" + logValue(url) + "] user=[" + logValue(user)
+                + "] password=[" + logValue(password) + "] passwordLength=" + password.length()
+                + ". Disable SCM_DB_LOG_CREDENTIALS after diagnosis.");
+        }
         if (!url.startsWith("jdbc:mariadb:")) throw new SQLException("SCM_DB_URL MariaDB 연결 설정이 필요합니다.");
-        Connection c = DriverManager.getConnection(url, setting("SCM_DB_USER", ""), setting("SCM_DB_PASSWORD", ""));
+        Connection c = DriverManager.getConnection(url, user, password);
         c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
         try (Statement s = c.createStatement()) { s.execute("SET time_zone = '+09:00'"); }
         return c;
+    }
+    private static String logValue(String value) {
+        return value.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t");
     }
     public void initialize() throws SQLException, IOException {
         if (!Boolean.parseBoolean(setting("SCM_DB_INIT", "false"))) return;

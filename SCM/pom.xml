@@ -4,5 +4,14 @@
   <dependencies><dependency><groupId>javax.servlet</groupId><artifactId>javax.servlet-api</artifactId><version>4.0.1</version><scope>provided</scope></dependency><dependency><groupId>javax.servlet</groupId><artifactId>jstl</artifactId><version>1.2</version></dependency><dependency><groupId>org.mariadb.jdbc</groupId><artifactId>mariadb-java-client</artifactId><version>3.5.3</version></dependency>
 <dependency><groupId>org.apache.poi</groupId><artifactId>poi-ooxml</artifactId><version>5.4.1</version></dependency>
 <dependency><groupId>junit</groupId><artifactId>junit</artifactId><version>4.13.2</version><scope>test</scope></dependency></dependencies>
-  <build><finalName>scm</finalName><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-war-plugin</artifactId><version>3.4.0</version></plugin><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.11.0</version></plugin></plugins></build>
+  <profiles>
+    <profile><id>dev</id><activation><activeByDefault>true</activeByDefault></activation><properties><scm.profile>dev</scm.profile><scm.excludedProfile>prod</scm.excludedProfile></properties></profile>
+    <profile><id>prod</id><properties><scm.profile>prod</scm.profile><scm.excludedProfile>dev</scm.excludedProfile></properties></profile>
+  </profiles>
+  <build><finalName>scm</finalName>
+    <resources>
+      <resource><directory>src/main/resources</directory><filtering>false</filtering><excludes><exclude>application-*.properties</exclude></excludes></resource>
+      <resource><directory>src/main/resources</directory><filtering>false</filtering><includes><include>application-${scm.profile}.properties</include></includes></resource>
+      <resource><directory>src/main/build-resources</directory><filtering>true</filtering></resource>
+    </resources><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-war-plugin</artifactId><version>3.4.0</version><configuration><packagingExcludes>WEB-INF/classes/application-${scm.excludedProfile}.properties</packagingExcludes></configuration></plugin><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.11.0</version></plugin></plugins></build>
 </project>

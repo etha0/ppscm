@@ -11,8 +11,8 @@ import static kr.bujobank.scm.Database.*;
 @WebServlet("/app/*")
 @MultipartConfig(maxFileSize=5242880,maxRequestSize=33554432,fileSizeThreshold=1048576)
 public class PageServlet extends HttpServlet {
-    private Database db; private ScmService service;
-    public void init() throws ServletException {try{db=new Database();db.initialize();service=new ScmService(db);}catch(Exception e){throw new ServletException("SCM 데이터베이스 초기화 실패. 서버 설정과 로그를 확인하세요.",e);}}
+    private Database db; private ScmService service; private ProductCodeImages codeImages;
+    public void init() throws ServletException {try{db=new Database();db.initialize();codeImages=new ProductCodeImages(db.setting("SCM_UPLOAD_IMAGES_DIR",""));ProductImageMigration.migrate(db,codeImages);service=new ScmService(db);}catch(Exception e){throw new ServletException("SCM 데이터베이스 초기화 실패. 서버 설정과 로그를 확인하세요.",e);}}
     private static final Map<String,String[]> PAGES = new LinkedHashMap<>();
     static {
         PAGES.put("dashboard", new String[]{"대시보드", "오늘의 운영 현황을 한눈에 확인하세요.", "운영 현황"});
@@ -61,7 +61,7 @@ public class PageServlet extends HttpServlet {
             if(!PAGES.containsKey(page)){resp.sendError(404);return;}
             Access.page(actor,page);
             req.setAttribute("page",page);req.setAttribute("title",PAGES.get(page)[0]);req.setAttribute("subtitle",PAGES.get(page)[1]);req.setAttribute("pages",PAGES);
-            try(Connection c=db.open()){new PageModel(c,req,actor).load(page);}
+            try(Connection c=db.open()){new PageModel(c,req,actor).load(page);decorateCodeImages(req);}
             Object flash=req.getSession().getAttribute("flash");if(flash!=null){req.setAttribute("flash",flash);req.getSession().removeAttribute("flash");}
             req.getRequestDispatcher("/WEB-INF/views/layout.jsp").forward(req,resp);
         }catch(Access.Denied e){error(req,resp,403,e.getMessage());}catch(IllegalArgumentException e){error(req,resp,400,e.getMessage());}catch(SQLException e){getServletContext().log("SCM 조회 실패",e);error(req,resp,503,"데이터베이스 연결 또는 조회에 실패했습니다. 관리자에게 문의하세요.");}catch(RuntimeException e){getServletContext().log("SCM 화면 처리 실패",e);error(req,resp,500,"화면을 불러오지 못했습니다. 관리자에게 문의하세요.");}
@@ -86,9 +86,26 @@ public class PageServlet extends HttpServlet {
         }catch(Access.Denied e){error(req,resp,403,e.getMessage());}catch(IllegalArgumentException|IllegalStateException e){error(req,resp,400,e.getMessage()==null?"입력값 또는 업로드 파일 크기를 확인하세요.":e.getMessage());}
         catch(Exception e){getServletContext().log("SCM 처리 실패",e);if(e instanceof SQLException&&"23000".equals(((SQLException)e).getSQLState()))error(req,resp,409,"중복 코드/아이디 또는 이미 처리된 요청입니다. 입력값과 목록을 확인하세요.");else error(req,resp,503,"처리 중 오류가 발생해 변경사항을 저장하지 않았습니다. 다시 시도해 주세요.");}
     }
+    @SuppressWarnings("unchecked")
+    private void decorateCodeImages(HttpServletRequest req) {
+        Object products=req.getAttribute("products");
+        if(!(products instanceof List)) return;
+        for(Map<String,Object> product:(List<Map<String,Object>>)products) {
+            boolean available=codeImages.exists((String)product.get("code"));
+            product.put("code_image",available);
+            if(String.valueOf(product.get("id")).equals(req.getParameter("id"))){req.setAttribute("codeImageProductId",product.get("id"));req.setAttribute("imageSequences",codeImages.sequences((String)product.get("code")));}
+        }
+    }
     private void image(HttpServletRequest req,HttpServletResponse resp,Map<String,Object> actor)throws SQLException,IOException{
-        long id;try{id=Long.parseLong(req.getParameter("id"));}catch(Exception e){resp.sendError(404);return;}
-        try(Connection c=db.open()){Map<String,Object> row=one(c,"SELECT i.mime,i.content,p.active FROM product_images i JOIN products p ON p.id=i.product_id WHERE i.id=?",id);if(row==null||(!Access.admin(actor)&&!bool(row,"active"))){resp.sendError(404);return;}resp.setContentType((String)row.get("mime"));byte[] bytes=(byte[])row.get("content");resp.setContentLength(bytes.length);resp.getOutputStream().write(bytes);}
+        long productId;int sequence;
+        try{productId=Long.parseLong(req.getParameter("productId"));sequence=req.getParameter("seq")==null?0:Integer.parseInt(req.getParameter("seq"));if(sequence<0||sequence>6)throw new IllegalArgumentException();}catch(Exception e){resp.sendError(404);return;}
+        try(Connection c=db.open()){
+            Map<String,Object> product=one(c,"SELECT code,active FROM products WHERE id=?",productId);
+            if(product==null||(!Access.admin(actor)&&!bool(product,"active"))){resp.sendError(404);return;}
+            byte[] bytes;
+            try{bytes=sequence==0?codeImages.read((String)product.get("code")):codeImages.read((String)product.get("code"),sequence);}catch(IOException e){resp.sendError(404);return;}
+            resp.setContentType("image/jpeg");resp.setHeader("X-Content-Type-Options","nosniff");resp.setHeader("Cache-Control","private, no-cache");resp.setContentLength(bytes.length);resp.getOutputStream().write(bytes);
+        }
     }
     private void redirect(HttpServletRequest req,HttpServletResponse resp,String route){resp.setStatus(303);resp.setHeader("Location",req.getContextPath()+"/app/"+route);}
     private void error(HttpServletRequest req,HttpServletResponse resp,int code,String message)throws ServletException,IOException{resp.setStatus(code);req.setAttribute("errorCode",code);req.setAttribute("errorMessage",message);req.getRequestDispatcher("/WEB-INF/views/error.jsp").forward(req,resp);}

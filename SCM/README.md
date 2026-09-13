@@ -16,7 +16,9 @@ $env:JAVA_HOME = 'C:\DevTools\java\openlogic-openjdk-17.0.14+7-windows-x64'
 powershell -ExecutionPolicy Bypass -File scripts/start-preview.ps1
 ```
 
-DB 접속정보는 `.local/scm.properties`에서 읽으며 WAR에 포함되지 않습니다. 다른 환경에서는 `SCM_CONFIG` 또는 `SCM_DB_URL`/`SCM_DB_USER`/`SCM_DB_PASSWORD` 환경변수를 지정합니다.
+DB 접속정보는 `src/main/resources/application-dev.properties` 또는 `application-prod.properties`에 입력한 뒤 빌드합니다. 선택한 환경 파일과 공통 설정이 WAR의 `WEB-INF/classes/`에 포함되며, `application.properties`에는 공통 설정을 둡니다. 실제 비밀번호를 입력한 파일은 Git에 커밋하지 마세요.
+설정 우선순위는 환경변수(`SCM_DB_URL`/`SCM_DB_USER`/`SCM_DB_PASSWORD`) > `SCM_CONFIG`가 가리키는 외부 파일 > WAR 내부 `application-{profile}.properties` > 공통 `application.properties`입니다. 개발용 실행 스크립트는 `SCM_CONFIG`를 `.local/scm.properties`로 지정합니다.
 
 
 
+환경 선택은 pom.xml의 Maven 프로필로 합니다. 개발: mvn clean package -Pdev, 운영: mvn clean package -Pprod. 프로필을 생략하면 dev입니다. 결과는 target/scm.war이며 선택한 환경 설정만 포함됩니다. 환경 전환 시 clean 빌드를 권장합니다. SCM_PROFILE 환경변수와 -Dscm.profile JVM 옵션은 더 이상 사용하지 않습니다. DB 환경변수와 SCM_CONFIG 외부 파일의 우선순위는 유지됩니다.

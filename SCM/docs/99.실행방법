@@ -1,17 +1,70 @@
 
 # war 빌드방법 
-
 cd D:\_Source_\WorkSpace_Bubang\MRO\SCM
-
 $env:JAVA_HOME = 'C:\DevTools\java\openlogic-openjdk-17.0.14+7-windows-x64'
+mvn clean package -Pprod (운영용)
+mvn clean package -Pdev  (개발용)
 
-& 'C:\DevTools\apache-maven-3.9.16\bin\mvn.cmd' -B package
-
-if ($LASTEXITCODE -ne 0) {
-    throw 'WAR 빌드에 실패했습니다.'
-}
-
-Write-Host "WAR 생성 완료: $PWD\target\scm.war"
+powershell -ExecutionPolicy Bypass -File scripts/start-preview.ps1
 
 계정 정보
 admin / admin1234!@#$
+
+
+# war build 방법 
+mvn package -Pprod (운영용)
+mvn package -Pdev  (개발용)
+# Maven 환경별 WAR 빌드
+# application-dev.properties / application-prod.properties에 각 DB 정보를 입력합니다.
+# 개발 (프로필 생략 시 기본값)
+mvn clean package -Pdev
+# 운영
+mvn clean package -Pprod
+# 결과: target/scm.war (선택한 환경 파일 + 공통 application.properties 포함)
+# 톰캣 SCM_PROFILE 설정은 필요 없습니다. 환경은 빌드 시 결정됩니다.
+# DB 환경변수 > SCM_CONFIG 외부 파일 > 환경별 파일 > 공통 파일 순으로 적용됩니다.
+
+# 콘솔실행 
+$env:JAVA_HOME = 'C:\DevTools\java\openlogic-openjdk-17.0.14+7-windows-x64'
+
+mvn clean package -Pprod
+powershell -ExecutionPolicy Bypass -File scripts/start-preview.ps1
+
+
+# 관리자 등록 (admin / admin1234!@#$)
+INSERT INTO users (
+    username, password_hash, name, role, store_id, active
+)
+SELECT
+    'admin',
+    'pbkdf2-sha256$600000$I0bigMetVZEDhN8s3PLMAA==$wA4qFa+B3bGDoq0AsgcT0dCYRkJdfn4lBiE7b6jxq3I=',
+    '최고 관리자',
+    'SUPER',
+    NULL,
+    TRUE
+WHERE NOT EXISTS (
+    SELECT 1 FROM users WHERE username = 'admin'
+);
+# clean 빌드 시 JAR 삭제 실패가 발생하는 경우
+# 로컬 미리보기 톰캣이 target/scm/WEB-INF/lib 파일을 사용 중일 수 있습니다.
+# 이 프로젝트의 미리보기를 중지한 뒤 빌드합니다.
+powershell -ExecutionPolicy Bypass -File scripts/stop-preview.ps1
+mvn clean package -Pprod
+# 개발 미리보기를 다시 실행하려면 개발용으로 빌드 후 시작합니다.
+# mvn clean package -Pdev
+# powershell -ExecutionPolicy Bypass -File scripts/start-preview.ps1
+# 상품 이미지 파일 저장
+SCM_UPLOAD_IMAGES_DIR=/home/ppscm/uploadfiles/images
+Windows 예: SCM_UPLOAD_IMAGES_DIR=D:/uploadfiles/images
+이미지는 파일로만 저장하며 위 경로를 반드시 지정해야 웹 업로드가 가능합니다.
+파일명: ABC001_1.JPG, ABC001_2.JPG ... ABC001_6.JPG (1부터 시작, 확장자 대문자).
+웹 업로드와 수동 배치 모두 같은 파일을 사용합니다. 번호가 가장 작은 이미지가 대표 이미지입니다.
+JPG/PNG 업로드는 실제 JPEG로 변환하며 투명 배경은 흰색으로 처리합니다. 최대 6장, 각 5MB 이하입니다.
+웹에서 이미지 교체 시 기존 1~6번 파일을 교체하고, 모두 삭제하면 수동 배치 파일도 함께 삭제합니다.
+상품코드 변경 시 기존 이미지 파일명도 변경합니다. 대상 코드 파일이 이미 있으면 충돌 오류를 냅니다.
+파일 추가·교체는 화면 새로고침으로 반영됩니다. 경로 변경 시 기존 파일을 옮기고 재배포/재시작하세요.
+톰캣 계정에 폴더 읽기/쓰기/삭제 권한이 필요합니다. 업로드 폴더를 DB와 함께 백업하세요.
+기존 DB 이미지: 경로 설정 후 앱 초기화 시 파일로 변환한 뒤 해당 product_images 레코드를 삭제합니다.
+파일명 충돌이나 변환 실패 시 해당 상품의 DB 데이터를 보존하고 초기화 오류를 냅니다. 로그에서 상품코드를 확인하세요.
+이전 UUID 파일 저장 방식의 빈 DB 이미지가 남아 있다면 원본 파일을 먼저 복원해야 합니다.
+기존 상품코드.jpg 파일은 상품코드_1.JPG로 직접 이름을 바꾸세요.

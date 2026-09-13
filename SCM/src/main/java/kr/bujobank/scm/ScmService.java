@@ -9,6 +9,7 @@ import static kr.bujobank.scm.Database.*;
 /** All state changes use the authenticated actor and a single database transaction. */
 public final class ScmService {
     public final Database db;
+
     private final String dummyHash = Passwords.hash(Passwords.token());
     public ScmService(Database db) { this.db=db; }
     public Map<String,Object> login(String username,String password) throws Exception {
@@ -24,7 +25,8 @@ public final class ScmService {
         });
     }
     public String save(long actorId,long authVersion,String token,String action,Map<String,String[]> params,List<ImageData> images) throws Exception {
-        return db.transaction(c -> {
+        try(ProductCodeImages.Change files=new ProductCodeImages(db.setting("SCM_UPLOAD_IMAGES_DIR","")).change()){
+        String result=db.transaction(c -> {
             Map<String,Object> actor=Access.user(c,actorId,true);
             if(number(actor,"auth_version")!=authVersion)throw new Access.Denied();
             if(token==null||!token.matches("[A-Za-z0-9_-]{43}"))throw new IllegalArgumentException("요청 정보가 만료되었습니다. 화면을 새로 열어주세요.");
@@ -34,7 +36,7 @@ public final class ScmService {
             switch(action){
                 case "supplier": Access.requireAdmin(actor);next=supplier(c,params);break;
                 case "category": Access.requireAdmin(actor);next=category(c,params);break;
-                case "product": Access.requireAdmin(actor); next=product(c,params,images);break;
+                case "product": Access.requireAdmin(actor); next=product(c,params,images,files);break;
                 case "store": Access.requireAdmin(actor); next=store(c,params);break;
                 case "user": case "admin": Access.requireAdmin(actor);next=user(c,actor,params,action);break;
                 case "price": Access.requireAdmin(actor);next=price(c,params);break;
@@ -49,6 +51,8 @@ public final class ScmService {
             execute(c,"INSERT INTO audit_events(actor_id,action) VALUES(?,?)",actorId,action);
             return next;
         });
+        files.commit();return result;
+        }
     }
     private static String raw(Map<String,String[]> p,String key){String[] values=p.get(key);return values==null||values.length==0?"":values[0];}
     public static String value(Map<String,String[]> p,String key){String[] values=p.get(key);return values==null||values.length==0?"":values[0].trim();}
@@ -61,7 +65,7 @@ public final class ScmService {
     private static int active(Map<String,String[]> p){String s=value(p,"active");if(!s.equals("1")&&!s.equals("0"))throw new IllegalArgumentException("사용 상태를 선택하세요.");return Integer.parseInt(s);}
     private static void version(Map<String,Object> row,Map<String,String[]> p){if(row==null)throw new IllegalArgumentException("항목을 찾을 수 없습니다.");if(number(row,"version")!=integer(p,"version",0,Integer.MAX_VALUE))throw new IllegalArgumentException("다른 사용자가 변경한 정보입니다. 새로 조회한 뒤 수정하세요.");}
     private static Map<String,Object> productLock(Connection c,long id) throws SQLException {Map<String,Object> p=one(c,"SELECT * FROM products WHERE id=? FOR UPDATE",id);if(p==null)throw new IllegalArgumentException("상품을 찾을 수 없습니다.");return p;}
-    private String product(Connection c,Map<String,String[]> p,List<ImageData> images)throws SQLException{
+    private String product(Connection c,Map<String,String[]> p,List<ImageData> images,ProductCodeImages.Change files)throws SQLException,java.io.IOException{
         long id=optionalId(p,"id");String code=text(p,"code",30,true);if(!code.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("상품코드는 영문, 숫자, -, _만 사용할 수 있습니다.");
         Map<String,Object> old=id==0?null:productLock(c,id); if(old!=null)version(old,p);
         Map<String,Object> selected=selectCategory(c,id(p,"category_id"),old==null?0:number(old,"category_id"));
@@ -69,7 +73,11 @@ public final class ScmService {
         BigDecimal price=amount(p,"price");int safety=integer(p,"safety_stock",0,100000000),enabled=active(p);
         if(id==0){id=insert(c,"INSERT INTO products(code,name,category,category_id,unit,price,safety_stock,active,description) VALUES(?,?,?,?,?,?,?,?,?)",code,name,category,selected.get("id"),unit,price,safety,enabled,description);}
         else {execute(c,"UPDATE products SET code=?,name=?,category=?,category_id=?,unit=?,price=?,safety_stock=?,active=?,description=?,version=version+1 WHERE id=?",code,name,category,selected.get("id"),unit,price,safety,enabled,description,id);}
-        if(!images.isEmpty()||"1".equals(value(p,"clear_images"))){execute(c,"DELETE FROM product_images WHERE product_id=?",id);int order=0;for(ImageData image:images)execute(c,"INSERT INTO product_images(product_id,mime,content,sort_no) VALUES(?,?,?,?)",id,image.mime,image.bytes,order++);}
+        if(!images.isEmpty()||"1".equals(value(p,"clear_images"))){
+            List<byte[]> jpegImages=new ArrayList<>();for(ImageData image:images)jpegImages.add(ImageFiles.jpeg(image.bytes));
+            files.replace(old==null?null:(String)old.get("code"),code,jpegImages);
+            execute(c,"DELETE FROM product_images WHERE product_id=?",id);
+        }else if(old!=null)files.rename((String)old.get("code"),code);
         return "products";
     }
     public static Map<String,Object> selectCategory(Connection c,long categoryId,long originalCategoryId)throws SQLException {
