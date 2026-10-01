@@ -6,6 +6,10 @@ import javax.imageio.stream.ImageInputStream;
 import javax.servlet.http.Part;
 public final class ImageFiles {
     public static byte[] jpeg(byte[] data)throws IOException {
+        try(ImageInputStream probe=ImageIO.createImageInputStream(new ByteArrayInputStream(data))){
+            Iterator<ImageReader> readers=ImageIO.getImageReaders(probe);if(!readers.hasNext())throw new IOException("이미지를 읽을 수 없습니다.");
+            ImageReader reader=readers.next();try{reader.setInput(probe);if(reader.getWidth(0)>8000||reader.getHeight(0)>8000||(long)reader.getWidth(0)*reader.getHeight(0)>24000000)throw new IOException("이미지 크기 제한을 초과했습니다.");}finally{reader.dispose();}
+        }
         java.awt.image.BufferedImage source=ImageIO.read(new ByteArrayInputStream(data));
         if(source==null)throw new IOException("이미지를 읽을 수 없습니다.");
         if(source.getWidth()>8000||source.getHeight()>8000||(long)source.getWidth()*source.getHeight()>24000000)throw new IOException("이미지 크기 제한을 초과했습니다.");

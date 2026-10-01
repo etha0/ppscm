@@ -9,7 +9,7 @@ import javax.servlet.annotation.*;
 import javax.servlet.http.*;
 import static kr.bujobank.scm.Database.*;
 @WebServlet("/app/*")
-@MultipartConfig(maxFileSize=5242880,maxRequestSize=33554432,fileSizeThreshold=1048576)
+@MultipartConfig(maxFileSize=33554432,maxRequestSize=33554432,fileSizeThreshold=1048576)
 public class PageServlet extends HttpServlet {
     private Database db; private ScmService service; private ProductCodeImages codeImages;
     public void init() throws ServletException {try{db=new Database();db.initialize();codeImages=new ProductCodeImages(db.setting("SCM_UPLOAD_IMAGES_DIR",""));ProductImageMigration.migrate(db,codeImages);service=new ScmService(db);}catch(Exception e){throw new ServletException("SCM 데이터베이스 초기화 실패. 서버 설정과 로그를 확인하세요.",e);}}
@@ -51,12 +51,14 @@ public class PageServlet extends HttpServlet {
             Map<String,Object> actor=actor(req);
             if(page.equals("login")){if(actor!=null){redirect(req,resp,Access.admin(actor)?"dashboard":"catalog");return;}req.getSession();req.getRequestDispatcher("/WEB-INF/views/login.jsp").forward(req,resp);return;}
             if(actor==null){redirect(req,resp,"login");return;}
+            if(page.equals("order-pdf")){orderPdf(req,resp,actor);return;}
             if(page.equals("image")){image(req,resp,actor);return;}
             if(page.equals("inventory-history")){
                 Access.requireAdmin(actor);
                 try(Connection c=db.open()){new PageModel(c,req,actor).inventoryHistory();}
                 req.getRequestDispatcher("/WEB-INF/views/inventory-history.jsp").forward(req,resp);return;
             }
+            if(page.equals("import-template")){Access.requireAdmin(actor);ExcelOperations.template(req.getParameter("kind"),resp);return;}
             if(page.equals("export-products")){Access.requireAdmin(actor);ExcelProducts.exportFile(db,resp);return;}
             if(!PAGES.containsKey(page)){resp.sendError(404);return;}
             Access.page(actor,page);
@@ -80,7 +82,9 @@ public class PageServlet extends HttpServlet {
             if(route.equals("logout")){req.getSession().invalidate();redirect(req,resp,"login");return;}
             if(!route.equals("save")){resp.sendError(404);return;}
             String action=req.getParameter("action"),next;
-            if("import".equals(action)){Access.requireAdmin(u);next=ExcelProducts.importFile(db,u,req.getParameter("requestToken"),req.getPart("workbook"),req.getParameter("mode"));}
+            if("import-prices".equals(action)||"import-receipts".equals(action)){Access.requireAdmin(u);String kind=action.substring(7);next=service.importRows(u,req.getParameter("requestToken"),kind,ExcelOperations.read(kind,req.getPart("workbook")));}
+            else if("import-images".equals(action)){Access.requireAdmin(u);next=service.importImages(u,req.getParameter("requestToken"),BulkImages.read(req.getParts()));}
+            else if("import".equals(action)){Access.requireAdmin(u);next=ExcelProducts.importFile(db,u,req.getParameter("requestToken"),req.getPart("workbook"),req.getParameter("mode"));}
             else {List<ScmService.ImageData> images=Collections.emptyList();if("product".equals(action)){Access.requireAdmin(u);images=ImageFiles.read(req.getParts());}next=service.save(number(u,"id"),number(u,"auth_version"),req.getParameter("requestToken"),action,req.getParameterMap(),images);}
             if("login".equals(next)){req.getSession().invalidate();}else req.getSession().setAttribute("flash","정상적으로 처리되었습니다.");redirect(req,resp,next);
         }catch(Access.Denied e){error(req,resp,403,e.getMessage());}catch(IllegalArgumentException|IllegalStateException e){error(req,resp,400,e.getMessage()==null?"입력값 또는 업로드 파일 크기를 확인하세요.":e.getMessage());}
@@ -106,6 +110,24 @@ public class PageServlet extends HttpServlet {
             try{bytes=sequence==0?codeImages.read((String)product.get("code")):codeImages.read((String)product.get("code"),sequence);}catch(IOException e){resp.sendError(404);return;}
             resp.setContentType("image/jpeg");resp.setHeader("X-Content-Type-Options","nosniff");resp.setHeader("Cache-Control","private, no-cache");resp.setContentLength(bytes.length);resp.getOutputStream().write(bytes);
         }
+    }
+    private void orderPdf(HttpServletRequest req,HttpServletResponse resp,Map<String,Object> actor)throws SQLException,IOException{
+        long id;try{id=Long.parseLong(req.getParameter("id"));if(id<1)throw new NumberFormatException();}catch(NumberFormatException e){resp.sendError(400);return;}
+        Map<String,Object> order;List<Map<String,Object>> lines;
+        try(Connection c=db.open()){
+            c.setAutoCommit(false);
+            try{
+                order=one(c,"SELECT o.*,s.name store_name,u.name actor_name FROM purchase_orders o JOIN stores s ON s.id=o.store_id JOIN users u ON u.id=o.created_by WHERE o.id=? LOCK IN SHARE MODE",id);
+                Access.requireStore(actor,order);
+                lines=rows(c,"SELECT line_no,product_name,unit,unit_price,quantity FROM order_lines WHERE order_id=? ORDER BY line_no",id);
+                c.commit();
+            }catch(SQLException|RuntimeException e){c.rollback();throw e;}
+        }
+        byte[] bytes;
+        try{bytes=OrderPdf.render(order,lines);}catch(IOException e){getServletContext().log("발주서 PDF 생성 실패",e);resp.sendError(500,"발주서 PDF를 생성하지 못했습니다.");return;}
+        resp.setContentType("application/pdf");
+        resp.setHeader("Content-Disposition","attachment; filename=\""+String.format(java.util.Locale.ROOT,"PO-%08d.pdf",id)+"\"");
+        resp.setContentLength(bytes.length);resp.getOutputStream().write(bytes);
     }
     private void redirect(HttpServletRequest req,HttpServletResponse resp,String route){resp.setStatus(303);resp.setHeader("Location",req.getContextPath()+"/app/"+route);}
     private void error(HttpServletRequest req,HttpServletResponse resp,int code,String message)throws ServletException,IOException{resp.setStatus(code);req.setAttribute("errorCode",code);req.setAttribute("errorMessage",message);req.getRequestDispatcher("/WEB-INF/views/error.jsp").forward(req,resp);}

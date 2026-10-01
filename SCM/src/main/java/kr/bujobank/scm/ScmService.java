@@ -125,11 +125,10 @@ public final class ScmService {
     }
     private String price(Connection c,Map<String,String[]> p)throws SQLException{
         long storeId=id(p,"store_id");Map<String,Object> s=one(c,"SELECT * FROM stores WHERE id=? FOR UPDATE",storeId);if(s==null||!bool(s,"active"))throw new IllegalArgumentException("사용 중인 매장을 선택하세요.");
-        long productId=optionalId(p,"product_id");String mode=value(p,"mode");BigDecimal value=amount(p,"value");if(!Arrays.asList("direct","discount","markup").contains(mode))throw new IllegalArgumentException("가격 적용 방식을 선택하세요.");
-        if(mode.equals("discount")&&value.compareTo(new BigDecimal("100"))>0)throw new IllegalArgumentException("할인율은 100% 이하여야 합니다.");
+        long productId=optionalId(p,"product_id");String mode=value(p,"mode");BigDecimal value=amount(p,"value");if(!"direct".equals(mode))throw new IllegalArgumentException("가격 적용 방식을 선택하세요.");
         List<Map<String,Object>> products=rows(c,"SELECT * FROM products "+(productId==0?"WHERE active=1":"WHERE id=?")+" ORDER BY id FOR UPDATE",productId==0?new Object[]{}:new Object[]{productId});
         if(products.isEmpty())throw new IllegalArgumentException("적용할 상품이 없습니다.");
-        for(Map<String,Object> product:products){BigDecimal base=(BigDecimal)product.get("price");BigDecimal result=mode.equals("direct")?value:base.multiply(BigDecimal.ONE.add(value.divide(new BigDecimal("100")).multiply(mode.equals("discount")?BigDecimal.ONE.negate():BigDecimal.ONE))).setScale(2,RoundingMode.HALF_UP);if(result.compareTo(new BigDecimal("999999999999.99"))>0)throw new IllegalArgumentException("적용 금액이 너무 큽니다.");execute(c,"INSERT INTO store_prices(store_id,product_id,price) VALUES(?,?,?) ON DUPLICATE KEY UPDATE price=VALUES(price)",storeId,product.get("id"),result);}
+        for(Map<String,Object> product:products){BigDecimal result=value;if(result.compareTo(new BigDecimal("999999999999.99"))>0)throw new IllegalArgumentException("적용 금액이 너무 큽니다.");execute(c,"INSERT INTO store_prices(store_id,product_id,price) VALUES(?,?,?) ON DUPLICATE KEY UPDATE price=VALUES(price)",storeId,product.get("id"),result);}
         return "prices?storeId="+storeId;
     }
     private String inventory(Connection c,Map<String,Object> actor,Map<String,String[]> p,String action)throws SQLException{
@@ -156,9 +155,60 @@ public final class ScmService {
         String[] productIds=p.get("product_id"),quantities=p.get("quantity");if(productIds==null||quantities==null||productIds.length!=quantities.length||productIds.length<1||productIds.length>100)throw new IllegalArgumentException("1~100개 상품을 선택하세요.");
         SortedMap<Long,Integer> cart=new TreeMap<>();for(int i=0;i<productIds.length;i++){try{long product=Long.parseLong(productIds[i]);int qty=Integer.parseInt(quantities[i]);if(product<1||qty<1||qty>100000||cart.put(product,qty)!=null)throw new NumberFormatException();}catch(NumberFormatException e){throw new IllegalArgumentException("발주 상품과 수량을 확인하세요. 중복 상품은 한 줄로 합쳐주세요.");}}
         long storeId=number(actor,"store_id");Map<String,Object> store=one(c,"SELECT * FROM stores WHERE id=? FOR UPDATE",storeId);if(store==null||!bool(store,"active"))throw new Access.Denied();
+        Map<Long,Map<String,Object>> locked=new TreeMap<>();
+        for(Map.Entry<Long,Integer> entry:cart.entrySet()){
+            Map<String,Object> product=productLock(c,entry.getKey());
+            if(!bool(product,"active"))throw new IllegalArgumentException("판매 중지된 상품이 포함되어 있습니다.");
+            requireOrderStock(product,entry.getValue());locked.put(entry.getKey(),product);
+        }
         long orderId=insert(c,"INSERT INTO purchase_orders(store_id,created_by,note) VALUES(?,?,?)",storeId,actor.get("id"),text(p,"note",1000,false));int line=0;
-        for(Map.Entry<Long,Integer> entry:cart.entrySet()){Map<String,Object> product=productLock(c,entry.getKey());if(!bool(product,"active"))throw new IllegalArgumentException("판매 중지된 상품이 포함되어 있습니다.");Map<String,Object> price=one(c,"SELECT price FROM store_prices WHERE store_id=? AND product_id=?",storeId,entry.getKey());execute(c,"INSERT INTO order_lines(order_id,line_no,product_id,product_name,unit,unit_price,quantity) VALUES(?,?,?,?,?,?,?)",orderId,++line,product.get("id"),product.get("name"),product.get("unit"),price==null?product.get("price"):price.get("price"),entry.getValue());}
+        for(Map.Entry<Long,Integer> entry:cart.entrySet()){Map<String,Object> product=locked.get(entry.getKey());Map<String,Object> price=one(c,"SELECT price FROM store_prices WHERE store_id=? AND product_id=?",storeId,entry.getKey());execute(c,"INSERT INTO order_lines(order_id,line_no,product_id,product_name,unit,unit_price,quantity) VALUES(?,?,?,?,?,?,?)",orderId,++line,product.get("id"),product.get("name"),product.get("unit"),price==null?product.get("price"):price.get("price"),entry.getValue());}
         return "detail?id="+orderId;
+    }
+    static void requireOrderStock(Map<String,Object> product,int quantity){
+        if(quantity>number(product,"stock"))throw new IllegalArgumentException("재고 부족으로 발주에 실패했습니다. "+product.get("name")+" (현재 재고 "+number(product,"stock")+", 요청 "+quantity+"). 발주 전체가 취소되었습니다.");
+    }
+    private Map<String,Object> beginImport(Connection c,Map<String,Object> actor,String token,String action)throws SQLException{
+        Map<String,Object> fresh=Access.user(c,number(actor,"id"),true);Access.requireAdmin(fresh);
+        if(number(fresh,"auth_version")!=number(actor,"auth_version"))throw new Access.Denied();
+        if(token==null||!token.matches("[A-Za-z0-9_-]{43}"))throw new IllegalArgumentException("요청 정보가 만료되었습니다.");
+        if(one(c,"SELECT token FROM action_requests WHERE token=?",token)!=null)throw new IllegalArgumentException("이미 처리된 업로드입니다.");
+        execute(c,"INSERT INTO action_requests(token,user_id,action) VALUES(?,?,?)",token,actor.get("id"),action);return fresh;
+    }
+    public String importRows(Map<String,Object> actor,String token,String kind,List<Map<String,String[]>> parsed)throws Exception{
+        if(!Arrays.asList("prices","receipts").contains(kind))throw new IllegalArgumentException("지원하지 않는 업로드입니다.");
+        return db.transaction(c->{
+            Map<String,Object> fresh=beginImport(c,actor,token,"import-"+kind);
+            for(Map<String,String[]> p:parsed)try{
+                Map<String,Object> product=one(c,"SELECT id FROM products WHERE code=?",value(p,"code"));
+                if(product==null)throw new IllegalArgumentException("등록되지 않은 상품코드: "+value(p,"code"));p.put("product_id",new String[]{product.get("id").toString()});
+                if(kind.equals("prices")){
+                    Map<String,Object> store=one(c,"SELECT id FROM stores WHERE code=?",value(p,"store_code"));
+                    if(store==null)throw new IllegalArgumentException("등록되지 않은 매장코드: "+value(p,"store_code"));p.put("store_id",new String[]{store.get("id").toString()});p.put("mode",new String[]{"direct"});price(c,p);
+                }else{
+                    Map<String,Object> supplier=one(c,"SELECT id FROM suppliers WHERE name=?",value(p,"supplier"));
+                    if(supplier==null)throw new IllegalArgumentException("등록되지 않은 공급업체: "+value(p,"supplier"));p.put("supplier_id",new String[]{supplier.get("id").toString()});inventory(c,fresh,p,"receipt");
+                }
+            }catch(IllegalArgumentException e){throw new IllegalArgumentException(value(p,"row")+"행: "+e.getMessage());}
+            execute(c,"INSERT INTO audit_events(actor_id,action) VALUES(?,?)",fresh.get("id"),"import-"+kind);return kind;
+        });
+    }
+    public String importImages(Map<String,Object> actor,String token,List<BulkImages.Item> items)throws Exception{
+        ProductCodeImages storage=new ProductCodeImages(db.setting("SCM_UPLOAD_IMAGES_DIR",""));
+        if(!storage.enabled())throw new IllegalArgumentException("SCM_UPLOAD_IMAGES_DIR 설정이 필요합니다.");
+        try(ProductCodeImages.Change files=storage.change()){
+            String result=db.transaction(c->{
+                Map<String,Object> fresh=beginImport(c,actor,token,"import-images");
+                Map<Long,List<BulkImages.Item>> grouped=new TreeMap<>();Map<Long,String> codes=new HashMap<>();
+                for(BulkImages.Item item:items){Map<String,Object> p=one(c,"SELECT id,code FROM products WHERE code=?",item.code);if(p==null)throw new IllegalArgumentException("등록되지 않은 상품코드: "+item.code);long id=number(p,"id");grouped.computeIfAbsent(id,k->new ArrayList<>()).add(item);codes.put(id,(String)p.get("code"));}
+                for(Map.Entry<Long,List<BulkImages.Item>> entry:grouped.entrySet()){
+                    Map<String,Object> p=productLock(c,entry.getKey());if(!Objects.equals(p.get("code"),codes.get(entry.getKey())))throw new IllegalArgumentException("상품코드가 변경되었습니다. 다시 업로드하세요.");
+                    for(BulkImages.Item item:entry.getValue())files.put((String)p.get("code"),item.sequence,item.bytes);
+                    execute(c,"UPDATE products SET version=version+1 WHERE id=?",entry.getKey());
+                }
+                execute(c,"INSERT INTO audit_events(actor_id,action) VALUES(?,'import-images')",fresh.get("id"));return "products";
+            });files.commit();return result;
+        }
     }
     private Map<String,Object> orderLock(Connection c,Map<String,Object> actor,long orderId)throws SQLException{Map<String,Object> o=one(c,"SELECT * FROM purchase_orders WHERE id=? FOR UPDATE",orderId);Access.requireStore(actor,o);return o;}
     private String ship(Connection c,Map<String,Object> actor,Map<String,String[]> p)throws SQLException{

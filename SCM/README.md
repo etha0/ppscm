@@ -1,4 +1,4 @@
-# 부조뱅크 SCM
+# PING-PONG SCM
 
 관리자와 매장 계정을 분리한 Servlet + JSP/JSTL 기반 SCM입니다. MariaDB에 상품·매장·계정·발주·입출고·재고 이력을 저장합니다.
 

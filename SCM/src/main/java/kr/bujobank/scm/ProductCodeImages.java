@@ -55,6 +55,7 @@ public final class ProductCodeImages {
             }
             if(bytes==null)Files.deleteIfExists(file);else write(file,bytes);
         }
+        public void put(String code,int sequence,byte[] bytes)throws IOException{set(code,sequence,bytes);}
         public void replace(String oldCode,String code,List<byte[]> images)throws IOException{
             if(images.size()>6)throw new IOException("이미지는 최대 6장입니다.");
             if(oldCode!=null&&!oldCode.equals(code)&&exists(code))throw new IOException("변경할 상품코드의 이미지가 이미 존재합니다.");
